@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
       range: 1,
     });
 
-    const currentDate = new Date(2026, 0, 31);
+    const currentDate = new Date();
 
     const processed = data
       .map((row, index) => {
