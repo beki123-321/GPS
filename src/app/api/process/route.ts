@@ -1,5 +1,3 @@
-
-// import * as XLSX from 'xlsx';
 import { NextRequest, NextResponse } from 'next/server';
 import { read, utils, write } from 'xlsx';
 import { parse, format, differenceInDays } from 'date-fns';
@@ -34,7 +32,7 @@ export async function POST(req: NextRequest) {
     const currentDate = new Date();
 
     const processed = data
-      .map((row, index) => {
+      .map((row) => {
         try {
           const datePart = (row.date_str || '').toString().trim().split(' ')[0];
           let parsedDate: Date;
@@ -52,7 +50,7 @@ export async function POST(req: NextRequest) {
           const city = extractCity(row.address?.toString() || '');
 
           return { ...row, parsed_date: parsedDate, delay, city };
-        } catch (e) {
+        } catch {
           return null;
         }
       })
@@ -70,6 +68,7 @@ export async function POST(req: NextRequest) {
       }));
 
     const recent = processed.filter((r) => r.delay < threshold);
+
     const groups: Record<string, string[]> = {};
     recent.forEach((r) => {
       const c = r.city || 'Unknown';
@@ -81,56 +80,40 @@ export async function POST(req: NextRequest) {
       Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
     );
 
-    // ────────────────────────────────────────────────
-    //          BUILD EXCEL - EXACT LAYOUT LIKE YOUR EXAMPLE
-    // ────────────────────────────────────────────────
+    // ===========================
+    // BUILD EXCEL
+    // ===========================
+
     const wb = utils.book_new();
     const sheetData: any[][] = [];
 
-    // Top headers (duplicated for live and lost sections)
-    sheetData.push([
-      'Vehicle status from GPS',
-      ...Array(9).fill(''),
-      'Vehicle status from GPS',
-      ...Array(3).fill(''),
-      `Date ${format(currentDate, 'dd/MM/yyyy')}`,
-    ]);
-    sheetData.push(['To:- General Manager', ...Array(9).fill(''), 'To:- General Manager']);
-    sheetData.push(['To:- Freight Transport Director', ...Array(9).fill(''), 'To:- Freight Transport Director']);
+    sheetData.push(['Vehicle status from GPS']);
+    sheetData.push(['To:- General Manager']);
+    sheetData.push(['To:- Freight Transport Director']);
     sheetData.push([]);
+    sheetData.push(['GPS Live Signal']);
 
-    // Section titles
-    sheetData.push(['GPS Live Signal', ...Array(9).fill(''), 'GPS Lost Signal']);
-
-    const LIVE_START_ROW = sheetData.length; // row for live data start
-    const LOST_START_COL = 10; // column K (0-based: 10) for lost table start
-
-    // Prepare lost table data
-    const lostTableData: any[][] = [
-      ['number', 'license_plate', 'date', 'Address', 'delay/days'],
-      ...lost.map((r) => [r.number, r.license_plate, r.date, r.address, r.delay]),
-    ];
-
-    // Live section - 2-column blocks, wrap every 41 rows (including city header)
+    const LIVE_START_ROW = sheetData.length;
     const MAX_ROWS_PER_BLOCK = 41;
+
     let liveRow = LIVE_START_ROW;
     let liveCol = 0;
     const merges: any[] = [];
 
+    // ===== LIVE SECTION =====
     Object.entries(sortedGroups).forEach(([city, plates]) => {
-      const groupRows = 1 + plates.length; // city + plates
+      const groupRows = 1 + plates.length;
 
       if (liveRow - LIVE_START_ROW + groupRows > MAX_ROWS_PER_BLOCK) {
         liveCol += 2;
         liveRow = LIVE_START_ROW;
       }
 
-      // Ensure rows exist up to needed
       while (sheetData.length <= liveRow + groupRows) {
         sheetData.push([]);
       }
 
-      // City header (merge 2 columns)
+      // City header
       sheetData[liveRow][liveCol] = city;
       sheetData[liveRow][liveCol + 1] = '';
       merges.push({
@@ -145,13 +128,21 @@ export async function POST(req: NextRequest) {
         sheetData[r][liveCol + 1] = plate;
       });
 
-      liveRow += groupRows + 1; // spacer
+      liveRow += groupRows + 1;
     });
 
-    // Add lost table to right side (starting from LOST_START_COL)
-    const lostStartRow = LIVE_START_ROW;
+    // ===== LOST SECTION (DYNAMIC POSITION) =====
+    const LOST_START_COL = liveCol + 4; // Always after live columns
+
+    sheetData[LIVE_START_ROW - 1][LOST_START_COL] = 'GPS Lost Signal';
+
+    const lostTableData: any[][] = [
+      ['number', 'license_plate', 'date', 'Address', 'delay/days'],
+      ...lost.map((r) => [r.number, r.license_plate, r.date, r.address, r.delay]),
+    ];
+
     lostTableData.forEach((lostRow, i) => {
-      const targetRow = lostStartRow + i;
+      const targetRow = LIVE_START_ROW + i;
       while (sheetData.length <= targetRow) sheetData.push([]);
 
       lostRow.forEach((val, j) => {
@@ -159,16 +150,16 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // Summary at bottom
-    const summaryRow = Math.max(sheetData.length, lostStartRow + lostTableData.length + 2);
-    while (sheetData.length <= summaryRow) sheetData.push([]);
-    sheetData[summaryRow][0] = `Total= Live GPS Vehicles ${recent.length} And ${lost.length} Vehicle are Lost GPS Signal == ${recent.length + lost.length}`;
+    // ===== SUMMARY =====
+    const summaryRow = Math.max(sheetData.length + 1);
+    sheetData[summaryRow] = [];
+    sheetData[summaryRow][0] =
+      `Total= Live GPS Vehicles ${recent.length} And ${lost.length} Vehicle are Lost GPS Signal == ${recent.length + lost.length}`;
 
-    // Create worksheet with merges
     const ws = utils.aoa_to_sheet(sheetData);
     ws['!merges'] = merges;
 
-    // Auto column widths
+    // Auto column width
     const range = utils.decode_range(ws['!ref'] || 'A1');
     ws['!cols'] = [];
     for (let c = 0; c <= range.e.c; c++) {
@@ -192,6 +183,7 @@ export async function POST(req: NextRequest) {
       excelBase64,
       generatedAt: format(currentDate, 'yyyy-MM-dd'),
     });
+
   } catch (error: any) {
     console.error('API processing error:', error);
     return NextResponse.json(
@@ -201,58 +193,30 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ===========================
+// CITY EXTRACTION
+// ===========================
 function extractCity(address: string): string {
   if (!address?.trim()) return 'Unknown';
 
   let addr = address.toLowerCase().trim();
 
-  // Priority: Djibouti
   if (addr.includes('djibouti')) return 'Djibouti';
 
-  // Normalize common variations
-  addr = addr.replace(/adiss - adama expy|addis - adama expy|addis - adama/gi, 'addis–adama expressway');
   addr = addr.replace(/kembolcha/gi, 'kombolcha');
-
-  // Remove plus codes (Google Plus Codes like WQC7+P5V, G77H+JHP, 8h6w+3h, etc.)
   addr = addr.replace(/\b[a-z0-9]{4}\+[a-z0-9]{2,}\b/gi, '');
-  addr = addr.replace(/\+/g, ' '); // any remaining stray +
-
-  // Remove noise phrases and road prefixes
-  addr = addr.replace(/emergency relief head office|adama garage|awel building|senegal st|unnamed road|addis - wonje road/gi, '');
-  addr = addr.replace(/^(a\d+[a]?|n\d+|rn\d+|b\d+|d\d+|e\d+|a10a?)\s*,?/gi, '');
-
-  // Clean commas and spaces
-  addr = addr.replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ').trim().replace(/^[,\s]+|[,\s]+$/g, '');
+  addr = addr.replace(/\+/g, ' ');
+  addr = addr.replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ').trim();
 
   const parts = addr.split(',').map(p => p.trim()).filter(Boolean);
 
-  const amharicMap: Record<string, string> = {
-    'አዲስ አበባ': 'Addis Ababa',
-    'ኣዳማ': 'Adama',
-    'ጅጅጋ': 'Jijiga',
-    'ኮምቦልቻ': 'Kombolcha',
-    // add more if needed
-  };
+  let city = parts[parts.length - 1] || 'Unknown';
 
-  let city = 'Unknown';
-  for (let i = parts.length - 1; i >= 0; i--) {
-    let p = parts[i];
-    if (!p || p === 'ethiopia') continue;
-
-    // Use mapped value if Amharic, else clean English
-    city = amharicMap[p] || p;
-
-    // Convert to Title Case
-    city = city
-      .replace(/\b\w/g, (char) => char.toUpperCase())
-      .replace(/\w+\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
-
-    if (city !== 'Unknown') break;
-  }
-
-  // Final standardization
-  if (/expressway|expy/i.test(city)) city = 'Addis–Adama Expressway';
-  if (/kombolcha/i.test(city)) city = 'Kombolcha';
+  city = city
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .replace(/\w+\S*/g, (word) =>
+      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+    );
 
   return city;
 }
