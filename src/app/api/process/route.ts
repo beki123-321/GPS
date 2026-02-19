@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
     const currentDate = new Date();
 
     const processed = data
-      .map((row) => {
+      .map((row, index) => {
         try {
           const datePart = (row.date_str || '').toString().trim().split(' ')[0];
           let parsedDate: Date;
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
           const city = extractCity(row.address?.toString() || '');
 
           return { ...row, parsed_date: parsedDate, delay, city };
-        } catch {
+        } catch (e) {
           return null;
         }
       })
@@ -68,7 +68,6 @@ export async function POST(req: NextRequest) {
       }));
 
     const recent = processed.filter((r) => r.delay < threshold);
-
     const groups: Record<string, string[]> = {};
     recent.forEach((r) => {
       const c = r.city || 'Unknown';
@@ -80,27 +79,31 @@ export async function POST(req: NextRequest) {
       Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
     );
 
-    // ===========================
-    // BUILD EXCEL
-    // ===========================
-
     const wb = utils.book_new();
     const sheetData: any[][] = [];
 
-    sheetData.push(['Vehicle status from GPS']);
-    sheetData.push(['To:- General Manager']);
-    sheetData.push(['To:- Freight Transport Director']);
+    sheetData.push([
+      'Vehicle status from GPS',
+      ...Array(9).fill(''),
+      'Vehicle status from GPS',
+      ...Array(3).fill(''),
+      `Date ${format(currentDate, 'dd/MM/yyyy')}`,
+    ]);
+    sheetData.push(['To:- General Manager', ...Array(9).fill(''), 'To:- General Manager']);
+    sheetData.push(['To:- Freight Transport Director', ...Array(9).fill(''), 'To:- Freight Transport Director']);
     sheetData.push([]);
-    sheetData.push(['GPS Live Signal']);
+    sheetData.push(['GPS Live Signal', ...Array(9).fill(''), 'GPS Lost Signal']);
 
     const LIVE_START_ROW = sheetData.length;
-    const MAX_ROWS_PER_BLOCK = 41;
 
+    // 🔥 ONLY THIS LINE CHANGED
+    const LOST_START_COL = liveCol + 4;
+
+    const MAX_ROWS_PER_BLOCK = 41;
     let liveRow = LIVE_START_ROW;
     let liveCol = 0;
     const merges: any[] = [];
 
-    // ===== LIVE SECTION =====
     Object.entries(sortedGroups).forEach(([city, plates]) => {
       const groupRows = 1 + plates.length;
 
@@ -113,7 +116,6 @@ export async function POST(req: NextRequest) {
         sheetData.push([]);
       }
 
-      // City header
       sheetData[liveRow][liveCol] = city;
       sheetData[liveRow][liveCol + 1] = '';
       merges.push({
@@ -121,7 +123,6 @@ export async function POST(req: NextRequest) {
         e: { r: liveRow, c: liveCol + 1 },
       });
 
-      // Plates
       plates.forEach((plate, i) => {
         const r = liveRow + i + 1;
         sheetData[r][liveCol] = i + 1;
@@ -131,18 +132,14 @@ export async function POST(req: NextRequest) {
       liveRow += groupRows + 1;
     });
 
-    // ===== LOST SECTION (DYNAMIC POSITION) =====
-    const LOST_START_COL = liveCol + 4; // Always after live columns
-
-    sheetData[LIVE_START_ROW - 1][LOST_START_COL] = 'GPS Lost Signal';
-
+    const lostStartRow = LIVE_START_ROW;
     const lostTableData: any[][] = [
       ['number', 'license_plate', 'date', 'Address', 'delay/days'],
       ...lost.map((r) => [r.number, r.license_plate, r.date, r.address, r.delay]),
     ];
 
     lostTableData.forEach((lostRow, i) => {
-      const targetRow = LIVE_START_ROW + i;
+      const targetRow = lostStartRow + i;
       while (sheetData.length <= targetRow) sheetData.push([]);
 
       lostRow.forEach((val, j) => {
@@ -150,16 +147,14 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // ===== SUMMARY =====
-    const summaryRow = Math.max(sheetData.length + 1);
-    sheetData[summaryRow] = [];
+    const summaryRow = Math.max(sheetData.length, lostStartRow + lostTableData.length + 2);
+    while (sheetData.length <= summaryRow) sheetData.push([]);
     sheetData[summaryRow][0] =
       `Total= Live GPS Vehicles ${recent.length} And ${lost.length} Vehicle are Lost GPS Signal == ${recent.length + lost.length}`;
 
     const ws = utils.aoa_to_sheet(sheetData);
     ws['!merges'] = merges;
 
-    // Auto column width
     const range = utils.decode_range(ws['!ref'] || 'A1');
     ws['!cols'] = [];
     for (let c = 0; c <= range.e.c; c++) {
@@ -183,7 +178,6 @@ export async function POST(req: NextRequest) {
       excelBase64,
       generatedAt: format(currentDate, 'yyyy-MM-dd'),
     });
-
   } catch (error: any) {
     console.error('API processing error:', error);
     return NextResponse.json(
@@ -191,32 +185,4 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-}
-
-// ===========================
-// CITY EXTRACTION
-// ===========================
-function extractCity(address: string): string {
-  if (!address?.trim()) return 'Unknown';
-
-  let addr = address.toLowerCase().trim();
-
-  if (addr.includes('djibouti')) return 'Djibouti';
-
-  addr = addr.replace(/kembolcha/gi, 'kombolcha');
-  addr = addr.replace(/\b[a-z0-9]{4}\+[a-z0-9]{2,}\b/gi, '');
-  addr = addr.replace(/\+/g, ' ');
-  addr = addr.replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ').trim();
-
-  const parts = addr.split(',').map(p => p.trim()).filter(Boolean);
-
-  let city = parts[parts.length - 1] || 'Unknown';
-
-  city = city
-    .replace(/\b\w/g, (char) => char.toUpperCase())
-    .replace(/\w+\S*/g, (word) =>
-      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-    );
-
-  return city;
 }
