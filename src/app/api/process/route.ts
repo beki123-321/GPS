@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
     sheetData.push(['GPS Live Signal', ...Array(9).fill(''), 'GPS Lost Signal']);
 
     const LIVE_START_ROW = sheetData.length; // row for live data start
-    const LOST_START_COL = 10; // column K (0-based: 10) for lost table start
+    const LOST_START_COL = 12; // column K (0-based: 10) for lost table start
 
     // Prepare lost table data
     const lostTableData: any[][] = [
