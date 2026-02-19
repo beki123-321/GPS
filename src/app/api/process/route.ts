@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
       while (sheetData.length <= targetRow) sheetData.push([]);
 
       lostRow.forEach((val, j) => {
-        sheetData[targetRow][LOST_START_COL + j] = val;
+        sheetData[targetRow][LOST_START_COL + l] = val;
       });
     });
 
